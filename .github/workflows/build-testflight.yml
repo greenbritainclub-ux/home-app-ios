@@ -1,0 +1,100 @@
+# Phase 3/4: signed LocoSmart build -> TestFlight. Cloud-managed signing via an App Store Connect API key (Admin role),
+# so no Mac and no certificates to handle. Needs these repository secrets (Settings > Secrets and variables > Actions):
+#   APPLE_TEAM_ID         10-character Team ID
+#   ASC_KEY_ID            App Store Connect API key id
+#   ASC_ISSUER_ID         App Store Connect issuer id
+#   ASC_KEY_P8_BASE64     the .p8 key file, base64
+#   GOOGLE_SERVICE_PLIST_BASE64   our Firebase GoogleService-Info.plist, base64
+name: Build LocoSmart for TestFlight
+
+on:
+  workflow_dispatch:
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+
+jobs:
+  testflight:
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Secrets present?
+        env:
+          T: ${{ secrets.APPLE_TEAM_ID }}
+          K: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          G: ${{ secrets.GOOGLE_SERVICE_PLIST_BASE64 }}
+        run: |
+          for v in T K G; do eval "test -n \"\$$v\"" || { echo "missing secret ($v)"; exit 1; }; done
+
+      - name: Signing config, Firebase config, API key
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_P8: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          GPLIST: ${{ secrets.GOOGLE_SERVICE_PLIST_BASE64 }}
+        run: |
+          cat > Configuration/HomeAssistant.overrides.xcconfig <<EOF
+          BUNDLE_ID_PREFIX = uk.supersalad
+          DEVELOPMENT_TEAM = $TEAM
+          CURRENT_PROJECT_VERSION = ${{ github.run_number }}
+          EOF
+          echo "$GPLIST" | base64 --decode > Sources/App/Resources/GoogleService-Info-Release.plist
+          cp Sources/App/Resources/GoogleService-Info-Release.plist Sources/App/Resources/GoogleService-Info-Debug.plist
+          echo "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc.p8"
+
+      - name: Archive (cloud-managed signing)
+        env:
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project HomeAssistant.xcodeproj -scheme App-Release -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/LocoSmart.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc.p8" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" \
+            CODE_SIGN_STYLE=Automatic \
+            | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|\*\* ARCHIVE" || true
+          test -d "$RUNNER_TEMP/LocoSmart.xcarchive/Products/Applications"
+
+      - name: Upload to TestFlight
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/export.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          EOF
+          set -o pipefail
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/LocoSmart.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/export.plist" -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc.p8" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER" \
+            | tee "$RUNNER_TEMP/export.log" | grep -E "error:|Upload|EXPORT" || true
+
+      - name: Remove key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/asc.p8"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: testflight-logs
+          path: |
+            ${{ runner.temp }}/archive.log
+            ${{ runner.temp }}/export.log
