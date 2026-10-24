@@ -23,7 +23,7 @@ class NotificationRateLimitsAPI {
         firstly { () -> Promise<URLRequest> in
             do {
                 var urlRequest = URLRequest(url: URL(
-                    string: "https://mobile-apps.home-assistant.io/api/checkRateLimits"
+                    string: "http://192.168.1.120:8772/api/checkRateLimits"
                 )!)
                 urlRequest.httpMethod = "POST"
                 urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
