@@ -48,7 +48,8 @@ public enum AppConstants {
     }
 
     public enum Firebase {
-        public static let pushURLString = "https://mobile-apps.home-assistant.io/api/sendPushNotification"
+        // LocoSmart: our own relay (add-on locosmart_push on the HA box), not HA's cloud relay
+        public static let pushURLString = "http://192.168.1.120:8772/api/sendPushNotification"
     }
 
     /// Home Assistant Blue
